@@ -1,0 +1,48 @@
+# =============================================================================
+# .dockerignore — AI Scanner OCR Sidecar (PaddleOCR)
+# =============================================================================
+
+# --- Version Control ---
+.git
+.gitignore
+
+# --- Environment & Secrets ---
+.env
+
+# --- Python Caches ---
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache
+.coverage
+htmlcov
+.tox
+.nox
+.mypy_cache
+
+# --- Virtual Environments ---
+.venv
+venv
+env
+ENV
+
+# --- Tests (Dockerfile only COPYs app/, but keep the build context trim) ---
+tests
+
+# --- Documentation ---
+README.md
+
+# --- Docker Files (mencegah recursive copy) ---
+Dockerfile
+docker-compose.yml
+
+# --- OS Files ---
+Thumbs.db
+.DS_Store
+
+# --- Build Artifacts ---
+*.egg-info
+dist
+build
+*.egg
