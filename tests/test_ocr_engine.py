@@ -16,6 +16,16 @@ def _settings(**overrides) -> Settings:
         max_upload_bytes=25_000_000,
         ocr_timeout_seconds=20.0,
         low_confidence_threshold=0.6,
+        worker_pool_size=2,
+        worker_recycle_after_tasks=200,
+        worker_memory_limit_mb=2048,
+        admission_wait_seconds=3.0,
+        readiness_max_seconds_since_success=900.0,
+        ocr_model_name="paddleocr",
+        ocr_model_version="2.10.0",
+        ocr_model_artifact_sha256="a" * 64,
+        preprocessing_version="pillow-rgb-v1",
+        calibrated_confidence_version="raw-paddleocr-v1",
     )
     return base.__class__(**{**base.__dict__, **overrides})
 
@@ -102,13 +112,38 @@ def test_low_confidence_lines_counted_in_ratio():
     assert result.low_confidence_line_ratio == 0.5
 
 
-def test_no_text_detected_returns_empty_result_not_error():
+def test_no_text_detected_returns_a_distinct_state_not_an_error():
+    """AUDIT L-03: "the engine read nothing" is its own outcome.
+
+    It is still not an ERROR -- a blank page is a legitimate result the
+    caller must handle -- but reporting it as plain `ok` with
+    low_confidence_line_ratio 0.0 made it indistinguishable from a perfect,
+    fully-confident page, which is the opposite conclusion.
+    """
     engine = PaddleOcrEngine(_settings())
     engine._engine = FakePaddleEngine([None])  # PaddleOCR's shape for "no text found"
     result = engine.run(_make_test_png_bytes())
-    assert result.status == "ok"
+    assert result.status == "no_text"
+    assert result.status != "error"
     assert result.full_text == ""
     assert result.lines == []
+    assert result.line_coverage == 0
+
+
+def test_a_read_page_carries_its_line_coverage_and_provenance():
+    """A ratio has no meaning without its denominator, and a stored result
+    that cannot name the model that produced it cannot be diagnosed after a
+    model change."""
+    engine = PaddleOcrEngine(_settings())
+    engine._engine = FakePaddleEngine([[[[[0, 0], [1, 0], [1, 1], [0, 1]], ("hello", 0.95)]]])
+
+    result = engine.run(_make_test_png_bytes())
+
+    assert result.status == "ok"
+    assert result.line_coverage == len(result.lines) == 1
+    assert result.model_name == "paddleocr"
+    assert result.model_version == "2.10.0"
+    assert result.engine_language == "en"
 
 
 def test_oversized_image_rejected_before_inference():

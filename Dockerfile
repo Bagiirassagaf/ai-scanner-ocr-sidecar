@@ -15,14 +15,21 @@
 # constraint on this image specifically -- if ai-scanner ever moves past
 # 3.12, this file may need to stay behind on 3.12 until paddlepaddle catches
 # up, so re-check PyPI before bumping either image's Python version again).
-FROM python:3.12.10-slim
+FROM python:3.12.10-slim@sha256:fd95fa221297a88e1cf49c55ec1828edd7c5a428187e67b5d1805692d11588db
+
+ARG DEBIAN_SNAPSHOT=20250520T000000Z
 
 WORKDIR /app
 
 # libgomp1: required by PaddlePaddle's OpenMP-based math kernels at runtime.
 # libglib2.0-0/libgl1: required by opencv-python-headless (a paddleocr
 # dependency) even in headless mode, for its shared-library loading.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i \
+        -e "s|http://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|" \
+        -e "s|http://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|" \
+        /etc/apt/sources.list.d/debian.sources \
+    && printf 'Acquire::Check-Valid-Until "false";\n' >/etc/apt/apt.conf.d/99snapshot \
+    && apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 \
         libglib2.0-0 \
         libgl1 \
@@ -37,8 +44,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # execute permission on /root itself).
 ENV HOME=/app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY app ./app
 
@@ -47,6 +54,15 @@ COPY app ./app
 # production), so a fresh container starts already warm and a transient
 # model-hub outage at runtime can never break startup.
 RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='en', show_log=False)"
+
+# Immutable provenance for the exact baked model cache. File paths and file
+# bytes both participate, so replacing or adding any weight/config changes
+# the digest reported by every OCR response.
+RUN find /app/.paddleocr -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum \
+    | sha256sum \
+    | awk '{print $1}' > /app/model-artifact.sha256
 
 RUN useradd --uid 1000 --home-dir /app --no-create-home sidecar \
     && chown -R sidecar:sidecar /app

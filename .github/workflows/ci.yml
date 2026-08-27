@@ -1,0 +1,84 @@
+name: CI
+on: [push, pull_request]
+
+# AUDIT FIX (C-05 / M-11 / L-06, 2026-08-26):
+# AUDIT_RECRUITMENT_PRODUCTION_READINESS_2026-08-25.md §4.2 recorded that
+# this project had no CI workflow at all and that its production
+# requirements ship no test toolchain -- which is how Pillow 11.1.0 (two
+# minor versions below the advisory fix the audit flagged as a release
+# blocker) stayed in the image unnoticed. M-11 asks for "policy yang sama
+# atau lebih kuat dari CI Setara" here; this mirrors ai-scanner's own
+# workflow, including its Trivy/SBOM job.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      # paddlepaddle/paddleocr are multi-GB and are NOT needed to run this
+      # suite: tests/conftest.py stubs the OCR engine out, because what is
+      # under test here is the admission control, upload bounds, worker
+      # pool and readiness semantics -- not PaddleOCR's own inference. The
+      # real engine is exercised by the production smoke test instead (see
+      # H-16's acceptance: a fixture request must produce `paddleocr`
+      # telemetry, not just a 200 from /health).
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check app tests
+      - run: mypy app
+      - run: pytest -m "not integration"
+      - run: pytest -m integration
+
+  dependency-audit:
+    name: Python dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install pip-audit==2.9.0
+      - name: Audit production dependencies
+        run: pip-audit --strict --requirement requirements.txt
+
+  artifact-security:
+    name: Production image scan and SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        run: docker build --tag ai-scanner-ocr-sidecar-ci:${{ github.sha }} .
+      - name: Block High and Critical image vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ai-scanner-ocr-sidecar-ci:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          scanners: vuln
+      - name: Report upstream High and Critical vulnerabilities without fixes
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ai-scanner-ocr-sidecar-ci:${{ github.sha }}
+          format: table
+          exit-code: '0'
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          scanners: vuln
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ai-scanner-ocr-sidecar-ci:${{ github.sha }}
+          format: cyclonedx-json
+          artifact-name: ai-scanner-ocr-sidecar-${{ github.sha }}.cdx.json
+          upload-artifact: true
+          upload-artifact-retention: 30
+          upload-release-assets: false

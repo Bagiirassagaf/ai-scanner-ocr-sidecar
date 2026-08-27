@@ -1,3 +1,14 @@
 /.pytest_cache
 __pycache__/
 *.py[cod]
+
+# Local tooling artifacts -- pip's HTTP cache and a --user install tree
+# created while running this project's own suite/lint on a developer
+# machine. Multi-hundred-MB and machine-specific; they must never enter a
+# commit or a build context (see .dockerignore for the image side).
+/.cache
+/.local
+/.mypy_cache
+/.ruff_cache
+/.venv
+/.venv*

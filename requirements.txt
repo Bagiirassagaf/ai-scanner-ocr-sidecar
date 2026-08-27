@@ -28,5 +28,9 @@ python-multipart==0.0.20
 paddlepaddle==3.3.1
 paddleocr==2.10.0
 
-Pillow==11.1.0
+Pillow==12.3.0
 numpy==1.26.4
+
+# PaddleOCR's packaging imports pkg_resources at runtime. Pin the provider
+# explicitly so hash-checking mode never relies on an implicit/unsafe tool.
+setuptools==84.0.0

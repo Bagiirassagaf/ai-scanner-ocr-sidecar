@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import platform
 import statistics
 import threading
 import time
@@ -30,6 +31,19 @@ class OcrResult:
     mean_confidence: float = 0.0
     median_confidence: float = 0.0
     low_confidence_line_ratio: float = 0.0
+    # AUDIT FIX (L-03, 2026-08-26): how many lines the ratio above was
+    # computed over. A ratio has no meaning without its denominator.
+    line_coverage: int = 0
+    # AUDIT FIX (L-02, 2026-08-26): provenance. Without it a stored OCR result
+    # cannot be attributed to the model that produced it, so a regression
+    # after a model change is undiagnosable after the fact.
+    model_name: str = ""
+    model_version: str = ""
+    engine_language: str = ""
+    model_artifact_sha256: str = ""
+    runtime_version: str = ""
+    preprocessing_version: str = ""
+    calibrated_confidence_version: str = ""
     duration_ms: int = 0
     error: str | None = None
 
@@ -167,14 +181,35 @@ class PaddleOcrEngine:
             median_confidence = 0.0
             low_ratio = 0.0
 
+        # AUDIT FIX (L-03, 2026-08-26): "no text at all" is a distinct STATE,
+        # not a zero ratio.
+        #
+        #     "`low_confidence_line_ratio=0` saat tidak ada text bersifat
+        #      ambigu."
+        #
+        # Zero is exactly what a perfect, fully-confident page reports. A page
+        # the engine could not read anything from reported the same number, so
+        # a consumer choosing whether to escalate or ask for a re-upload could
+        # not tell "flawless" from "blank" without separately checking the
+        # line count.
+        status = "ok" if lines else "no_text"
+
         return OcrResult(
-            status="ok",
+            status=status,
             full_text=full_text,
             lines=lines,
             mean_confidence=round(mean_confidence, 4),
             median_confidence=round(median_confidence, 4),
             low_confidence_line_ratio=round(low_ratio, 4),
+            line_coverage=len(lines),
             duration_ms=int((time.monotonic() - started) * 1000),
+            model_name=self.settings.ocr_model_name,
+            model_version=self.settings.ocr_model_version,
+            engine_language=self.settings.ocr_language,
+            model_artifact_sha256=self.settings.ocr_model_artifact_sha256,
+            runtime_version=f"python-{platform.python_version()};paddleocr-{self.settings.ocr_model_version}",
+            preprocessing_version=self.settings.preprocessing_version,
+            calibrated_confidence_version=self.settings.calibrated_confidence_version,
         )
 
 
@@ -186,3 +221,20 @@ def get_engine(settings: Settings) -> PaddleOcrEngine:
     if _engine_singleton is None:
         _engine_singleton = PaddleOcrEngine(settings)
     return _engine_singleton
+
+
+def run_ocr_in_worker(image_bytes: bytes, settings: Settings) -> OcrResult:
+    """AUDIT FIX (C-02, 2026-08-26): entry point NativeWorkerPool dispatches
+    to on a pooled worker process (see app/native_worker_pool.py and
+    main.py's /ocr route). _engine_singleton above is a fresh, empty module
+    global in each new worker process -- the first task routed to a given
+    worker pays PaddleOCR's real model-load cost here (get_engine().load()),
+    and every later task on that SAME worker (this function runs inside
+    _worker_main's persistent loop, in-process, not re-spawned per call)
+    reuses the already-loaded singleton, same as the pre-C-02 single
+    process-wide engine did -- just now one such engine per pool worker
+    instead of one for the whole service."""
+    engine = get_engine(settings)
+    if not engine.is_ready and engine.load_error is None:
+        engine.load()
+    return engine.run(image_bytes)

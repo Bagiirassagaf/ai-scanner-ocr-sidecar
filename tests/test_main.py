@@ -97,17 +97,25 @@ def test_ocr_rejects_upload_over_the_configured_byte_limit(monkeypatch):
     assert response.status_code == 413
 
 
-def test_ocr_accepts_upload_within_the_configured_byte_limit(monkeypatch):
+def test_ocr_accepts_upload_within_the_configured_byte_limit(monkeypatch, native_worker_pool_inline):
     monkeypatch.setattr(main_module.engine, "_engine", object())  # pretend it's loaded
 
     class FakeResult:
         status = "ok"
         full_text = "hello"
-        lines = []
+        lines: list = []  # noqa: RUF012 -- plain stub, never mutated
         mean_confidence = 0.9
         median_confidence = 0.9
         low_confidence_line_ratio = 0.0
+        line_coverage = 1
         duration_ms = 5
+        model_name = "paddleocr"
+        model_version = "2.10.0"
+        engine_language = "en"
+        model_artifact_sha256 = "a" * 64
+        runtime_version = "python-test;paddleocr-2.10.0"
+        preprocessing_version = "pillow-rgb-v1"
+        calibrated_confidence_version = "raw-paddleocr-v1"
         error = None
 
     monkeypatch.setattr(main_module.engine, "run", lambda _image_bytes: FakeResult())
@@ -120,3 +128,87 @@ def test_ocr_accepts_upload_within_the_configured_byte_limit(monkeypatch):
     )
     assert response.status_code == 200
     assert response.json()["full_text"] == "hello"
+
+
+# --- AUDIT H-03 / L-01 regression ------------------------------------------
+
+
+def test_ready_answers_503_when_the_engine_failed_to_load(monkeypatch):
+    """L-01: this used to answer HTTP 200 with `status: "error"` in the body.
+    Every standard readiness consumer -- an orchestrator probe, a load
+    balancer, ai-scanner's own reachability check -- reads the STATUS CODE,
+    so a sidecar whose model had failed to load looked perfectly ready and
+    kept being sent work it could not do."""
+    sidecar_main = main_module
+
+    monkeypatch.setattr(sidecar_main.engine, "_engine", None)
+    monkeypatch.setattr(sidecar_main.engine, "_load_error", "model artifact missing", raising=False)
+
+    response = client.get("/ready", headers={"X-Sidecar-Key": "test-sidecar-key"})
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "error"
+    assert body["engine_ready"] is False
+    assert body["reason"] == "engine_not_ready"
+
+
+def test_ready_answers_503_when_every_admission_slot_is_taken(monkeypatch):
+    """H-03: back-pressure has to reach the caller BEFORE its requests start
+    timing out on the admission wait."""
+    sidecar_main = main_module
+
+    monkeypatch.setattr(sidecar_main.engine, "_engine", object())
+    monkeypatch.setattr(type(sidecar_main.admission), "saturated", property(lambda _self: True))
+
+    response = client.get("/ready", headers={"X-Sidecar-Key": "test-sidecar-key"})
+
+    assert response.status_code == 503
+    assert response.json()["reason"] == "queue_saturated"
+
+
+def test_ready_answers_503_when_inference_has_not_succeeded_for_too_long(monkeypatch):
+    """A model object that exists is not the same as a model that works: if
+    every call is timing out, this service must stop being sent work."""
+    sidecar_main = main_module
+
+    monkeypatch.setattr(sidecar_main.engine, "_engine", object())
+    monkeypatch.setattr(type(sidecar_main.admission), "saturated", property(lambda _self: False))
+    monkeypatch.setattr(sidecar_main, "_seconds_since_last_success", lambda: 10_000.0)
+
+    response = client.get("/ready", headers={"X-Sidecar-Key": "test-sidecar-key"})
+
+    assert response.status_code == 503
+    assert response.json()["reason"] == "no_recent_successful_inference"
+
+
+def test_ready_answers_200_when_the_service_is_genuinely_usable(monkeypatch):
+    sidecar_main = main_module
+
+    monkeypatch.setattr(sidecar_main.engine, "_engine", object())
+    monkeypatch.setattr(type(sidecar_main.admission), "saturated", property(lambda _self: False))
+    monkeypatch.setattr(sidecar_main, "_seconds_since_last_success", lambda: 1.0)
+
+    response = client.get("/ready", headers={"X-Sidecar-Key": "test-sidecar-key"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["reason"] is None
+    assert body["capacity"] >= 1
+
+
+def test_a_never_used_sidecar_is_ready_rather_than_wedged(monkeypatch):
+    """No successful inference YET is a cold start, not a wedge -- reporting
+    it as unhealthy would keep a freshly deployed sidecar out of rotation
+    forever, since it can only succeed once traffic reaches it."""
+    sidecar_main = main_module
+
+    monkeypatch.setattr(sidecar_main.engine, "_engine", object())
+    monkeypatch.setattr(type(sidecar_main.admission), "saturated", property(lambda _self: False))
+    monkeypatch.setattr(sidecar_main, "_seconds_since_last_success", lambda: None)
+
+    response = client.get("/ready", headers={"X-Sidecar-Key": "test-sidecar-key"})
+
+    assert response.status_code == 200
+    assert response.json()["seconds_since_last_success"] is None

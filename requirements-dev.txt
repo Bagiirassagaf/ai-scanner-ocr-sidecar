@@ -1,0 +1,32 @@
+# =============================================================================
+# Development Dependencies — AI Scanner OCR Sidecar
+# =============================================================================
+# AUDIT FIX (L-06 / M-11, 2026-08-26):
+# AUDIT_RECRUITMENT_PRODUCTION_READINESS_2026-08-25.md §4.2 -- "Sidecar
+# tidak memiliki workflow CI sendiri dan requirements produksinya tidak
+# menyediakan test toolchain." This file is the toolchain half of that;
+# .github/workflows/ci.yml is the workflow half.
+#
+# NOT installed into the production image (Dockerfile installs
+# requirements.txt only).
+#
+#   pip install -r requirements-dev.txt
+# =============================================================================
+
+# Deliberately NOT `-r requirements.txt`: paddlepaddle + paddleocr are
+# multi-GB and the unit suite never touches them (tests/conftest.py stubs
+# the engine). Pulling them in would add ~15 minutes to every CI run to
+# exercise code the suite mocks out. The versions that actually ship are
+# gated by the `dependency-audit` and `artifact-security` jobs, which read
+# requirements.txt / the built image directly.
+fastapi==0.115.6
+python-multipart==0.0.20
+Pillow==12.3.0
+numpy==1.26.4
+
+# Testing
+pytest==8.3.5
+pytest-asyncio==0.24.0
+httpx==0.28.1
+ruff
+mypy

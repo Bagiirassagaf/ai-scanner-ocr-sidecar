@@ -20,9 +20,13 @@ htmlcov
 .tox
 .nox
 .mypy_cache
+.codex-tmp
+.cache
+.local
 
 # --- Virtual Environments ---
 .venv
+.venv*
 venv
 env
 ENV

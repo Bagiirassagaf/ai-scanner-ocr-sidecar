@@ -1,0 +1,19 @@
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# AUDIT FIX (L-06, 2026-08-26): this project had no ruff config at all
+# before this (audit finding: "ruff: gagal dengan 5 issue"). Mirrors
+# ai-scanner's own pyproject.toml -- same rationale applies here: this
+# service also parses untrusted, hostile input (images via PIL/PaddleOCR),
+# where several broad `except Exception` catches (ocr_engine.py) are
+# deliberate fail-closed resilience boundaries, not oversights.
+ignore = ["BLE001", "S110", "S112"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's own dependency-injection idiom is `param: T = Depends(...)` /
+# `= File(...)` / `= Header(...)` -- these calls are cheap, side-effect-free
+# factories FastAPI itself re-invokes per request; not the "mutable default
+# argument" footgun B008 exists to catch. Without this, every route using
+# it trips B008.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.File", "fastapi.Header"]
