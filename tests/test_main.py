@@ -167,19 +167,19 @@ def test_ready_answers_503_when_every_admission_slot_is_taken(monkeypatch):
     assert response.json()["reason"] == "queue_saturated"
 
 
-def test_ready_answers_503_when_inference_has_not_succeeded_for_too_long(monkeypatch):
-    """A model object that exists is not the same as a model that works: if
-    every call is timing out, this service must stop being sent work."""
+def test_ready_answers_503_after_consecutive_inference_failures(monkeypatch):
+    """Readiness drops on observed failures, not on an idle clock."""
     sidecar_main = main_module
 
     monkeypatch.setattr(sidecar_main.engine, "_engine", object())
     monkeypatch.setattr(type(sidecar_main.admission), "saturated", property(lambda _self: False))
     monkeypatch.setattr(sidecar_main, "_seconds_since_last_success", lambda: 10_000.0)
+    monkeypatch.setattr(sidecar_main, "_consecutive_failures", lambda: 3)
 
     response = client.get("/ready", headers={"X-Sidecar-Key": "test-sidecar-key"})
 
     assert response.status_code == 503
-    assert response.json()["reason"] == "no_recent_successful_inference"
+    assert response.json()["reason"] == "consecutive_inference_failures"
 
 
 def test_ready_answers_200_when_the_service_is_genuinely_usable(monkeypatch):
@@ -207,6 +207,7 @@ def test_a_never_used_sidecar_is_ready_rather_than_wedged(monkeypatch):
     monkeypatch.setattr(sidecar_main.engine, "_engine", object())
     monkeypatch.setattr(type(sidecar_main.admission), "saturated", property(lambda _self: False))
     monkeypatch.setattr(sidecar_main, "_seconds_since_last_success", lambda: None)
+    monkeypatch.setattr(sidecar_main, "_consecutive_failures", lambda: 0)
 
     response = client.get("/ready", headers={"X-Sidecar-Key": "test-sidecar-key"})
 

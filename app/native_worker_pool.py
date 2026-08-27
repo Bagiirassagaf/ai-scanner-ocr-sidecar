@@ -80,6 +80,22 @@ def _worker_main(task_queue: Any, result_queue: Any, memory_limit_bytes: int | N
             # the wall-clock timeout below is the primary bound regardless.
             pass
 
+    # Load the model in the process that will actually execute inference.
+    # The multiprocessing context is "spawn", so a model loaded by the
+    # uvicorn parent is never shared with these workers and only doubles the
+    # memory footprint. Eager worker-local loading also prevents the first
+    # real request (and every first request after recycling) from spending
+    # its inference timeout on model initialization.
+    try:
+        from app.config import get_settings
+        from app.ocr_engine import get_engine
+
+        worker_engine = get_engine(get_settings())
+        if not worker_engine.is_ready and worker_engine.load_error is None:
+            worker_engine.load()
+    except BaseException as exc:
+        logger.error("native_worker_model_initialization_failed: %s", exc)
+
     while True:
         item = task_queue.get()
         if item is None:  # shutdown sentinel

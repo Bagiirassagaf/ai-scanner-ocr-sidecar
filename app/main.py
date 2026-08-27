@@ -23,26 +23,58 @@ from pydantic import BaseModel
 
 from app.admission import AdmissionController, AdmissionRejectedError
 from app.config import get_settings
-from app.native_worker_pool import NativeWorkerTimeoutError, get_native_worker_pool
-from app.ocr_engine import get_engine, run_ocr_in_worker
+from app.native_worker_pool import NativeWorkerCrashedError, NativeWorkerTimeoutError, get_native_worker_pool
+from app.ocr_engine import get_engine, run_ocr_in_worker, warm_ocr_worker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
+# Lightweight parent-process handle kept for diagnostics/test doubles only.
+# Production lifespan deliberately never calls load() on it; real models live
+# exclusively in NativeWorkerPool processes.
 engine = get_engine(settings)
 # AUDIT FIX (C-02, 2026-08-26): see app/admission.py -- bounds concurrent
 # /ocr requests before their body is even read, instead of an unbounded
 # number all landing on the executor at once.
 admission = AdmissionController(limit=settings.worker_pool_size, admission_wait_seconds=settings.admission_wait_seconds)
+_engine_ready = False
+_engine_load_error: str | None = None
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    global _engine_ready, _engine_load_error
     started = time.monotonic()
-    engine.load()
-    logger.info("sidecar_startup_completed", extra={"load_ms": int((time.monotonic() - started) * 1000), "ready": engine.is_ready})
-    yield
+    pool = get_native_worker_pool(
+        size=settings.worker_pool_size,
+        recycle_after_tasks=settings.worker_recycle_after_tasks,
+        memory_limit_mb=settings.worker_memory_limit_mb,
+    )
+    errors: list[str] = []
+    try:
+        # Round-robin dispatch means exactly one probe reaches each worker.
+        # Workers start concurrently and eagerly load their own model; these
+        # probes wait for that real serving state instead of loading a dead
+        # duplicate model in the uvicorn parent.
+        for _ in range(settings.worker_pool_size):
+            ready, error = await asyncio.to_thread(
+                pool.run,
+                warm_ocr_worker,
+                (settings,),
+                timeout_seconds=max(120.0, settings.ocr_timeout_seconds),
+            )
+            if not ready:
+                errors.append(error or "worker model is not ready")
+        _engine_ready = not errors
+        _engine_load_error = "; ".join(errors) if errors else None
+        logger.info(
+            "sidecar_startup_completed",
+            extra={"load_ms": int((time.monotonic() - started) * 1000), "ready": _engine_ready},
+        )
+        yield
+    finally:
+        pool.shutdown()
 
 
 app = FastAPI(title=settings.service_name, lifespan=lifespan)
@@ -76,6 +108,7 @@ class ReadyResponse(BaseModel):
     in_flight: int = 0
     capacity: int = 0
     seconds_since_last_success: float | None = None
+    consecutive_failures: int = 0
 
 
 class OcrLineResponse(BaseModel):
@@ -120,13 +153,21 @@ def health() -> HealthResponse:
 # if every call is timing out, this service should stop being sent work
 # rather than keep absorbing it.
 _last_ocr_success_monotonic: float | None = None
+_consecutive_ocr_failures = 0
 _last_success_lock = threading.Lock()
 
 
 def _record_ocr_success() -> None:
-    global _last_ocr_success_monotonic
+    global _last_ocr_success_monotonic, _consecutive_ocr_failures
     with _last_success_lock:
         _last_ocr_success_monotonic = time.monotonic()
+        _consecutive_ocr_failures = 0
+
+
+def _record_ocr_failure() -> None:
+    global _consecutive_ocr_failures
+    with _last_success_lock:
+        _consecutive_ocr_failures += 1
 
 
 def _seconds_since_last_success() -> float | None:
@@ -134,6 +175,11 @@ def _seconds_since_last_success() -> float | None:
         if _last_ocr_success_monotonic is None:
             return None
         return time.monotonic() - _last_ocr_success_monotonic
+
+
+def _consecutive_failures() -> int:
+    with _last_success_lock:
+        return _consecutive_ocr_failures
 
 
 @app.get("/ready", response_model=ReadyResponse, dependencies=[Depends(verify_shared_key)])
@@ -159,30 +205,35 @@ def ready(response: Response) -> ReadyResponse:
     Saturation is reported as not-ready too, so back-pressure reaches the
     caller before its requests start timing out on the admission wait.
     """
-    stale_after = settings.readiness_max_seconds_since_success
     since_success = _seconds_since_last_success()
+    consecutive_failures = _consecutive_failures()
 
     reason: str | None = None
-    if not engine.is_ready:
+    serving_engine_ready = _engine_ready or engine.is_ready
+    serving_load_error = _engine_load_error or engine.load_error
+
+    if not serving_engine_ready:
         reason = "engine_not_ready"
     elif admission.saturated:
         reason = "queue_saturated"
-    elif since_success is not None and stale_after > 0 and since_success > stale_after:
-        # Inference has been failing/timing out for longer than any healthy
-        # workload would go quiet: treat it as a wedge, not as idleness.
-        reason = "no_recent_successful_inference"
+    elif consecutive_failures >= 3:
+        # Time since the last success alone cannot distinguish a wedged
+        # engine from a healthy but idle service. Only recent, consecutive
+        # failed attempts are evidence of a wedge.
+        reason = "consecutive_inference_failures"
 
     if reason is not None:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return ReadyResponse(
         status="ok" if reason is None else "error",
-        engine_ready=engine.is_ready,
-        load_error=engine.load_error,
+        engine_ready=serving_engine_ready,
+        load_error=serving_load_error,
         reason=reason,
         in_flight=admission.in_flight,
         capacity=admission.limit,
         seconds_since_last_success=round(since_success, 3) if since_success is not None else None,
+        consecutive_failures=consecutive_failures,
     )
 
 
@@ -226,7 +277,7 @@ async def handle_admission_rejected(_: Request, exc: AdmissionRejectedError) -> 
 
 @app.post("/ocr", response_model=OcrResponse, dependencies=[Depends(verify_shared_key)])
 async def ocr(file: UploadFile = File(...)) -> OcrResponse:
-    if not engine.is_ready:
+    if not (_engine_ready or engine.is_ready):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="OCR engine is not ready.")
 
     # AUDIT FIX (C-02, 2026-08-26): admission is acquired BEFORE the upload
@@ -266,7 +317,8 @@ async def ocr(file: UploadFile = File(...)) -> OcrResponse:
                 (image_bytes, settings),
                 timeout_seconds=settings.ocr_timeout_seconds,
             )
-        except NativeWorkerTimeoutError:
+        except (NativeWorkerTimeoutError, NativeWorkerCrashedError):
+            _record_ocr_failure()
             return OcrResponse(
                 status="error",
                 full_text="",
@@ -282,6 +334,7 @@ async def ocr(file: UploadFile = File(...)) -> OcrResponse:
         admission.release()
 
     if result.status == "error":
+        _record_ocr_failure()
         return OcrResponse(
             status="error",
             full_text="",

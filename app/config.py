@@ -156,9 +156,17 @@ def get_settings() -> Settings:
         preprocessing_version=os.getenv("SIDECAR_PREPROCESSING_VERSION", "pillow-rgb-v1").strip(),
         calibrated_confidence_version=os.getenv("SIDECAR_CALIBRATED_CONFIDENCE_VERSION", "raw-paddleocr-v1").strip(),
         low_confidence_threshold=_as_float(os.getenv("SIDECAR_LOW_CONFIDENCE_THRESHOLD"), 0.6),
-        worker_pool_size=_as_int(os.getenv("SIDECAR_WORKER_POOL_SIZE"), 2),
+        # One PaddleOCR model worker is the safe default for the laptop
+        # production-equivalent budget. Horizontal concurrency remains
+        # bounded by admission and can be raised explicitly on a larger host.
+        worker_pool_size=_as_int(os.getenv("SIDECAR_WORKER_POOL_SIZE"), 1),
         worker_recycle_after_tasks=_as_int(os.getenv("SIDECAR_WORKER_RECYCLE_AFTER_TASKS"), 200),
-        worker_memory_limit_mb=_as_optional_int(os.getenv("SIDECAR_WORKER_MEMORY_LIMIT_MB"), 2048),
+        # RLIMIT_AS is deliberately opt-in. Native vision libraries reserve
+        # and mmap substantially more virtual address space than their RSS;
+        # an apparently generous value can therefore prevent cv2/Paddle from
+        # loading even though the container is well below its cgroup limit.
+        # Production supplies a hard container memory ceiling instead.
+        worker_memory_limit_mb=_as_optional_int(os.getenv("SIDECAR_WORKER_MEMORY_LIMIT_MB"), None),
         admission_wait_seconds=_as_float(os.getenv("SIDECAR_ADMISSION_WAIT_SECONDS"), 3.0),
     )
     _validate(settings)

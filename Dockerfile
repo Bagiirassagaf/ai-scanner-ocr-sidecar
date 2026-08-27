@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 # =============================================================================
 # ai-scanner-ocr-sidecar -- PaddleOCR, on its own Python version. Deliberately
 # NOT installed into ai-scanner's own image -- PaddlePaddle's packaging lags
@@ -69,5 +70,20 @@ RUN useradd --uid 1000 --home-dir /app --no-create-home sidecar \
 USER sidecar
 
 EXPOSE 9109
+
+HEALTHCHECK --interval=30s --timeout=6s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9109/health', timeout=5).status == 200 else 1)"
+
+# Release-only labels stay after model generation and ownership setup so a
+# new release identifier cannot trigger a costly PaddleOCR image rebuild.
+ARG RELEASE_REVISION=unknown
+ARG RELEASE_VERSION=0.0.0-dev
+ARG RELEASE_CREATED=1970-01-01T00:00:00Z
+LABEL org.opencontainers.image.title="AI Scanner OCR Sidecar" \
+      org.opencontainers.image.description="Isolated PaddleOCR inference sidecar" \
+      org.opencontainers.image.vendor="Setara" \
+      org.opencontainers.image.revision="${RELEASE_REVISION}" \
+      org.opencontainers.image.version="${RELEASE_VERSION}" \
+      org.opencontainers.image.created="${RELEASE_CREATED}"
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9109"]

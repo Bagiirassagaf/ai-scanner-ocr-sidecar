@@ -9,6 +9,9 @@ class _InProcessNativeWorkerPool:
     def run(self, func, args=(), kwargs=None, *, timeout_seconds):
         return func(*args, **(kwargs or {}))
 
+    def shutdown(self):
+        return None
+
 
 @pytest.fixture
 def native_worker_pool_inline(monkeypatch):

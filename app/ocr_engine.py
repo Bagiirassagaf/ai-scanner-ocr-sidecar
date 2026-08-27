@@ -238,3 +238,11 @@ def run_ocr_in_worker(image_bytes: bytes, settings: Settings) -> OcrResult:
     if not engine.is_ready and engine.load_error is None:
         engine.load()
     return engine.run(image_bytes)
+
+
+def warm_ocr_worker(settings: Settings) -> tuple[bool, str | None]:
+    """Confirms that the selected pool worker has a loaded model."""
+    engine = get_engine(settings)
+    if not engine.is_ready and engine.load_error is None:
+        engine.load()
+    return engine.is_ready, engine.load_error
