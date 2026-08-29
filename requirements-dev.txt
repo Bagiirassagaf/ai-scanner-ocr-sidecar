@@ -19,8 +19,8 @@
 # exercise code the suite mocks out. The versions that actually ship are
 # gated by the `dependency-audit` and `artifact-security` jobs, which read
 # requirements.txt / the built image directly.
-fastapi==0.115.6
-python-multipart==0.0.20
+fastapi==0.137.1
+python-multipart==0.0.32
 Pillow==12.3.0
 numpy==1.26.4
 

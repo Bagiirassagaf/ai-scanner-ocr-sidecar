@@ -1,8 +1,8 @@
 # =============================================================================
 # OCR Sidecar Dependencies (PaddleOCR)
 # =============================================================================
-# Runs on its own Dockerfile-pinned Python (python:3.12.10-slim, matching
-# ai-scanner's own image as of 2026-08-01) deliberately kept as its own
+# Runs on its own Dockerfile-pinned Python (python:3.12.14-slim-bookworm, matching
+# ai-scanner's own image as of 2026-08-29) deliberately kept as its own
 # service rather than merged into ai-scanner's own image -- PaddlePaddle's
 # packaging lags new CPython releases significantly (see the OCR upgrade
 # roadmap, §6.2): paddlepaddle==3.3.1 ships a cp312 wheel but not yet a
@@ -14,9 +14,9 @@
 # independently.
 # =============================================================================
 
-fastapi==0.115.6
+fastapi==0.137.1
 uvicorn[standard]==0.34.0
-python-multipart==0.0.20
+python-multipart==0.0.32
 
 # CPU-only PaddlePaddle -- no GPU required for this step (per roadmap §6.2).
 # Version confirmed installable and functional (model construction + real

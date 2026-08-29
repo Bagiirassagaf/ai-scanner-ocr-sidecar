@@ -23,7 +23,11 @@ from pydantic import BaseModel
 
 from app.admission import AdmissionController, AdmissionRejectedError
 from app.config import get_settings
-from app.native_worker_pool import NativeWorkerCrashedError, NativeWorkerTimeoutError, get_native_worker_pool
+from app.native_worker_pool import (
+    NativeWorkerCrashedError,
+    NativeWorkerTimeoutError,
+    get_native_worker_pool,
+)
 from app.ocr_engine import get_engine, run_ocr_in_worker, warm_ocr_worker
 
 logging.basicConfig(level=logging.INFO)

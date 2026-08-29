@@ -7,18 +7,17 @@
 # stays small and auditable, and this service can be restarted/scaled/rolled
 # back entirely independently of ai-scanner itself.
 #
-# 2026-08-01: pinned to 3.12.10 (was 3.10-slim) to match the maintainer's
-# local Python and ai-scanner's own image -- verified empirically (PyPI
-# JSON API) that paddlepaddle==3.3.1 ships a cp312 wheel; it does NOT yet
+# 2026-08-29: pinned to the patched 3.12.14 Bookworm rebuild, matching
+# ai-scanner's own image. PaddlePaddle 3.3.1 ships a cp312 wheel; it does NOT yet
 # ship a cp314 wheel, which is why this sidecar still can't simply reuse
 # ai-scanner's Python version directly (both now happen to be 3.12, but for
 # ai-scanner that's a free choice, while paddlepaddle's cp314 gap is a real
 # constraint on this image specifically -- if ai-scanner ever moves past
 # 3.12, this file may need to stay behind on 3.12 until paddlepaddle catches
 # up, so re-check PyPI before bumping either image's Python version again).
-FROM python:3.12.10-slim@sha256:fd95fa221297a88e1cf49c55ec1828edd7c5a428187e67b5d1805692d11588db
+FROM python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579
 
-ARG DEBIAN_SNAPSHOT=20250520T000000Z
+ARG DEBIAN_SNAPSHOT=20260828T000000Z
 
 WORKDIR /app
 
@@ -30,7 +29,8 @@ RUN sed -i \
         -e "s|http://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|" \
         /etc/apt/sources.list.d/debian.sources \
     && printf 'Acquire::Check-Valid-Until "false";\n' >/etc/apt/apt.conf.d/99snapshot \
-    && apt-get update && apt-get install -y --no-install-recommends \
+    && apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
         libgomp1 \
         libglib2.0-0 \
         libgl1 \
