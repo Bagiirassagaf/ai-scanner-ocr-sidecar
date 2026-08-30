@@ -35,11 +35,9 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T")
 
 _MP_CONTEXT = multiprocessing.get_context("spawn")
 
@@ -195,7 +193,26 @@ class NativeWorkerPool:
             task_id = self._task_counter
         return worker, task_id
 
-    def run(self, func: Callable[..., T], args: tuple = (), kwargs: dict | None = None, *, timeout_seconds: float) -> T:
+    @staticmethod
+    def _dispatch_task(
+        worker: _Worker,
+        task_id: int,
+        func: Callable[..., Any],
+        args: tuple,
+        kwargs: dict | None,
+    ) -> None:
+        try:
+            worker.task_queue.put((task_id, func, args, kwargs or {}))
+        except Exception as exc:
+            worker.restart()
+            raise NativeWorkerCrashedError(f"Failed to dispatch task to worker: {exc!r}") from exc
+
+    def _record_completed_task(self, worker: _Worker) -> None:
+        worker.tasks_handled += 1
+        if worker.tasks_handled >= self._recycle_after_tasks:
+            worker.restart()
+
+    def run[T](self, func: Callable[..., T], args: tuple = (), kwargs: dict | None = None, *, timeout_seconds: float) -> T:
         """Runs func(*args, **kwargs) on a pooled worker process. func must
         be a module-level function (picklable by qualified name) and every
         argument/the return value must be picklable too.
@@ -212,11 +229,7 @@ class NativeWorkerPool:
         worker, task_id = self._acquire_worker()
         with worker.lock:
             started = time.monotonic()
-            try:
-                worker.task_queue.put((task_id, func, args, kwargs or {}))
-            except Exception as exc:
-                worker.restart()
-                raise NativeWorkerCrashedError(f"Failed to dispatch task to worker: {exc!r}") from exc
+            self._dispatch_task(worker, task_id, func, args, kwargs)
 
             deadline = started + timeout_seconds
             while True:
@@ -244,9 +257,7 @@ class NativeWorkerPool:
                     # and keep waiting for ours, or time out.
                     continue
 
-                worker.tasks_handled += 1
-                if worker.tasks_handled >= self._recycle_after_tasks:
-                    worker.restart()
+                self._record_completed_task(worker)
 
                 if status == "error":
                     # payload is always a real exception instance -- either
