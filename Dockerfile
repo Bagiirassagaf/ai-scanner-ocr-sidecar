@@ -67,7 +67,9 @@ RUN find /app/.paddleocr -type f -print0 \
 
 RUN useradd --uid 1000 --home-dir /app --no-create-home sidecar \
     && chown -R sidecar:sidecar /app
-USER sidecar
+USER 1000:1000
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 EXPOSE 9109
 
@@ -79,9 +81,11 @@ HEALTHCHECK --interval=30s --timeout=6s --start-period=60s --retries=3 \
 ARG RELEASE_REVISION=unknown
 ARG RELEASE_VERSION=0.0.0-dev
 ARG RELEASE_CREATED=1970-01-01T00:00:00Z
+ARG RELEASE_SOURCE=local-workspace
 LABEL org.opencontainers.image.title="AI Scanner OCR Sidecar" \
       org.opencontainers.image.description="Isolated PaddleOCR inference sidecar" \
       org.opencontainers.image.vendor="Setara" \
+      org.opencontainers.image.source="${RELEASE_SOURCE}" \
       org.opencontainers.image.revision="${RELEASE_REVISION}" \
       org.opencontainers.image.version="${RELEASE_VERSION}" \
       org.opencontainers.image.created="${RELEASE_CREATED}"

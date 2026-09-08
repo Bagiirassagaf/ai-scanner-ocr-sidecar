@@ -8,6 +8,18 @@
 
 # --- Environment & Secrets ---
 .env
+**/.env
+**/.env.*
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/auth.json
+**/.npmrc.local
+.github
+.tmp*
+release-artifacts
+storage-data
 
 # --- Python Caches ---
 __pycache__
